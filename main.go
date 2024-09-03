@@ -3,30 +3,31 @@ package main
 import (
 	"log"
 	"net/http"
+	"yubikey/configs"
+	"yubikey/handlers"
 	"yubikey/middleware"
-	"yubikey/models"
 
-	"github.com/gorilla/handlers"
+	gorilla "github.com/gorilla/handlers"
 )
 
 func main() {
-	models.InitMongoDB()
-	models.InitWebAuthn()
+	configs.InitMongoDB()
+	configs.InitWebAuthn()
 
-	http.Handle("/protected", middleware.JWTMiddleware(http.HandlerFunc(models.ProtectedHandler)))
-	http.Handle("/protected/webauthn", middleware.JWTMiddleware(http.HandlerFunc(models.ProtectedHandler)))
-	http.HandleFunc("/register", models.RegisterHandler)
-	http.HandleFunc("/register/finish", models.FinishRegistrationHandler)
-	http.HandleFunc("/login/begin", models.BeginLoginHandler)
-	http.HandleFunc("/login/finish", models.FinishLoginHandler)
+	http.Handle("/protected", middleware.JWTMiddleware(http.HandlerFunc(handlers.ProtectedHandler)))
+	http.Handle("/protected/webauthn", middleware.JWTMiddleware(http.HandlerFunc(handlers.ProtectedHandler)))
+	http.HandleFunc("/register", handlers.RegisterHandler)
+	http.HandleFunc("/register/finish", handlers.FinishRegistrationHandler)
+	http.HandleFunc("/login/begin", handlers.BeginLoginHandler)
+	http.HandleFunc("/login/finish", handlers.FinishLoginHandler)
 
 	// CORS configuration
-	corsHeaders := handlers.AllowedHeaders([]string{"X-Requested-With", "Content-Type", "Authorization"})
-	corsOrigins := handlers.AllowedOrigins([]string{"*"}) // Allow your origin
-	corsMethods := handlers.AllowedMethods([]string{"GET", "POST", "OPTIONS"})
+	corsHeaders := gorilla.AllowedHeaders([]string{"X-Requested-With", "Content-Type", "Authorization"})
+	corsOrigins := gorilla.AllowedOrigins([]string{"*"}) // Allow your origin
+	corsMethods := gorilla.AllowedMethods([]string{"GET", "POST", "OPTIONS"})
 
-	// Wrap your handlers with CORS middleware
-	handler := handlers.CORS(corsHeaders, corsOrigins, corsMethods)(http.DefaultServeMux)
+	// Wrap your gorilla with CORS middleware
+	handler := gorilla.CORS(corsHeaders, corsOrigins, corsMethods)(http.DefaultServeMux)
 
 	// Start the server
 	log.Println("Web Server running on port 8080")

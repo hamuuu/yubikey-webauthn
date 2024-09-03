@@ -1,4 +1,4 @@
-package models
+package handlers
 
 import (
 	"bytes"
@@ -7,6 +7,9 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"yubikey/configs"
+	"yubikey/models"
 
 	"github.com/dgrijalva/jwt-go"
 )
@@ -23,27 +26,27 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if the user already exists
-	if _, err := getUserByName(req.Username); err == nil {
+	if _, err := models.GetUserByName(req.Username); err == nil {
 		http.Error(w, "User already exists", http.StatusConflict)
 		return
 	}
 
 	// Hash the password
-	hashedPassword, err := hashPassword(req.Password)
+	hashedPassword, err := models.HashPassword(req.Password)
 	if err != nil {
 		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
 		return
 	}
 
 	// Generate a user ID
-	userID, err := generateUserID(req.Username)
+	userID, err := models.GenerateUserID(req.Username)
 	if err != nil {
 		http.Error(w, "Failed to generate user ID", http.StatusInternalServerError)
 		return
 	}
 
 	// Create the user object
-	user := &User{
+	user := &models.User{
 		ID:          userID,
 		Name:        req.Username,
 		DisplayName: req.Username,
@@ -51,20 +54,20 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save the user to the database
-	if err := saveUser(user); err != nil {
+	if err := models.SaveUser(user); err != nil {
 		http.Error(w, "Failed to save user", http.StatusInternalServerError)
 		return
 	}
 
 	// Initiate WebAuthn registration
-	options, sessionData, err := webAuthn.BeginRegistration(user)
+	options, sessionData, err := configs.WebAuthn.BeginRegistration(user)
 	if err != nil {
 		http.Error(w, "Failed to initiate WebAuthn registration", http.StatusInternalServerError)
 		return
 	}
-	storeMutex.Lock()
-	sessionStore[string(user.ID)] = sessionData
-	storeMutex.Unlock()
+	configs.StoreMutex.Lock()
+	configs.SessionStore[string(user.ID)] = sessionData
+	configs.StoreMutex.Unlock()
 
 	// Send the registration options to the client
 	json.NewEncoder(w).Encode(options)
@@ -92,23 +95,23 @@ func FinishRegistrationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Retrieve the user from the database
-	user, err := getUserByName(req.Username)
+	user, err := models.GetUserByName(req.Username)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
 	// Retrieve the session data from the in-memory store
-	storeMutex.RLock()
-	sessionData, exists := sessionStore[string(user.ID)]
-	storeMutex.RUnlock()
+	configs.StoreMutex.RLock()
+	sessionData, exists := configs.SessionStore[string(user.ID)]
+	configs.StoreMutex.RUnlock()
 	if !exists {
 		http.Error(w, "Session data not found", http.StatusBadRequest)
 		return
 	}
 
 	// Finish the WebAuthn registration
-	credential, err := webAuthn.FinishRegistration(user, *sessionData, r)
+	credential, err := configs.WebAuthn.FinishRegistration(user, *sessionData, r)
 	if err != nil {
 		log.Println("here : " + err.Error())
 		http.Error(w, "Failed to finish registration", http.StatusInternalServerError)
@@ -117,7 +120,7 @@ func FinishRegistrationHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Add the new credential to the user and update the database
 	user.AddCredential(*credential)
-	if err := updateUser(user); err != nil {
+	if err := models.UpdateUser(user); err != nil {
 		http.Error(w, "Failed to update user", http.StatusInternalServerError)
 		return
 	}
@@ -137,7 +140,7 @@ func BeginLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := getUserByName(req.Username)
+	user, err := models.GetUserByName(req.Username)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
@@ -148,15 +151,15 @@ func BeginLoginHandler(w http.ResponseWriter, r *http.Request) {
 	// 	return
 	// }
 
-	options, sessionData, err := webAuthn.BeginLogin(user)
+	options, sessionData, err := configs.WebAuthn.BeginLogin(user)
 	if err != nil {
 		http.Error(w, "Failed to initiate WebAuthn login", http.StatusInternalServerError)
 		return
 	}
 
-	storeMutex.Lock()
-	sessionStore[string(user.ID)] = sessionData
-	storeMutex.Unlock()
+	configs.StoreMutex.Lock()
+	configs.SessionStore[string(user.ID)] = sessionData
+	configs.StoreMutex.Unlock()
 
 	json.NewEncoder(w).Encode(options)
 }
@@ -181,23 +184,23 @@ func FinishLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := getUserByName(req.Username)
+	user, err := models.GetUserByName(req.Username)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
 	// Retrieve the session data from the in-memory store
-	storeMutex.RLock()
-	sessionData, exists := sessionStore[string(user.ID)]
-	storeMutex.RUnlock()
+	configs.StoreMutex.RLock()
+	sessionData, exists := configs.SessionStore[string(user.ID)]
+	configs.StoreMutex.RUnlock()
 	if !exists {
 		http.Error(w, "Session data not found", http.StatusBadRequest)
 		return
 	}
 
 	// Finish the WebAuthn login
-	credential, err := webAuthn.FinishLogin(user, *sessionData, r)
+	credential, err := configs.WebAuthn.FinishLogin(user, *sessionData, r)
 	if err != nil {
 		log.Println("error : " + err.Error())
 		http.Error(w, "Failed to finish login", http.StatusInternalServerError)
@@ -205,7 +208,7 @@ func FinishLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user.AddCredential(*credential)
-	if err := updateUser(user); err != nil {
+	if err := models.UpdateUser(user); err != nil {
 		http.Error(w, "Failed to update user", http.StatusInternalServerError)
 		return
 	}
@@ -231,23 +234,23 @@ func AuthenticateUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Retrieve the user from the database using the user ID
-	user, err := getUserByName(userID)
+	user, err := models.GetUserByName(userID)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
 	// Retrieve the session data from the in-memory store
-	storeMutex.RLock()
-	sessionData, exists := sessionStore[string(user.ID)]
-	storeMutex.RUnlock()
+	configs.StoreMutex.RLock()
+	sessionData, exists := configs.SessionStore[string(user.ID)]
+	configs.StoreMutex.RUnlock()
 	if !exists {
 		http.Error(w, "Session data not found", http.StatusBadRequest)
 		return
 	}
 
 	// Finish the WebAuthn login
-	credential, err := webAuthn.FinishLogin(user, *sessionData, r)
+	credential, err := configs.WebAuthn.FinishLogin(user, *sessionData, r)
 	if err != nil {
 		log.Println("WebAuthn error: " + err.Error())
 		http.Error(w, "Failed to finish WebAuthn login", http.StatusInternalServerError)
@@ -256,7 +259,7 @@ func AuthenticateUserHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Add the new credential to the user and update the database
 	user.AddCredential(*credential)
-	if err := updateUser(user); err != nil {
+	if err := models.UpdateUser(user); err != nil {
 		http.Error(w, "Failed to update user", http.StatusInternalServerError)
 		return
 	}
@@ -271,7 +274,7 @@ func ProtectedHandler(w http.ResponseWriter, r *http.Request) {
 var jwtSecretKey = []byte("your_secret_key")
 
 // Function to generate JWT
-func generateJWT(user *User) (string, error) {
+func generateJWT(user *models.User) (string, error) {
 	// Set token expiration time
 	expirationTime := time.Now().Add(24 * time.Hour)
 
