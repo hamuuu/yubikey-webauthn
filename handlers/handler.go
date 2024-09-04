@@ -225,48 +225,6 @@ func FinishLoginHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"token":"` + tokenString + `"}`))
 }
 
-func AuthenticateUserHandler(w http.ResponseWriter, r *http.Request) {
-	// Retrieve user ID from context (set by JWT middleware)
-	userID, ok := r.Context().Value("userID").(string)
-	if !ok || userID == "" {
-		http.Error(w, "User ID not found in token", http.StatusUnauthorized)
-		return
-	}
-
-	// Retrieve the user from the database using the user ID
-	user, err := models.GetUserByName(userID)
-	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
-		return
-	}
-
-	// Retrieve the session data from the in-memory store
-	configs.StoreMutex.RLock()
-	sessionData, exists := configs.SessionStore[string(user.ID)]
-	configs.StoreMutex.RUnlock()
-	if !exists {
-		http.Error(w, "Session data not found", http.StatusBadRequest)
-		return
-	}
-
-	// Finish the WebAuthn login
-	credential, err := configs.WebAuthn.FinishLogin(user, *sessionData, r)
-	if err != nil {
-		log.Println("WebAuthn error: " + err.Error())
-		http.Error(w, "Failed to finish WebAuthn login", http.StatusInternalServerError)
-		return
-	}
-
-	// Add the new credential to the user and update the database
-	user.AddCredential(*credential)
-	if err := models.UpdateUser(user); err != nil {
-		http.Error(w, "Failed to update user", http.StatusInternalServerError)
-		return
-	}
-
-	w.Write([]byte("User authenticated successfully via JWT and WebAuthn"))
-}
-
 func ProtectedHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Welcome! You have accessed a protected route."))
 }
