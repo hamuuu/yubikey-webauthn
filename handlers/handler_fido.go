@@ -200,16 +200,10 @@ func FinishLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Finish the WebAuthn login
-	credential, err := configs.WebAuthn.FinishLogin(user, *sessionData, r)
+	_, err = configs.WebAuthn.FinishLogin(user, *sessionData, r)
 	if err != nil {
 		log.Println("error : " + err.Error())
 		http.Error(w, "Failed to finish login", http.StatusInternalServerError)
-		return
-	}
-
-	user.AddCredential(*credential)
-	if err := models.UpdateUser(user); err != nil {
-		http.Error(w, "Failed to update user", http.StatusInternalServerError)
 		return
 	}
 

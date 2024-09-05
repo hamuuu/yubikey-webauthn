@@ -4,12 +4,108 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login/Register</title>
+    <script src="https://webauthn.io/static/js/simplewebauthn-browser.8.2.1.umd.min.js"></script>
+    <style>
+        /* Existing styles */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            width: 300px;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        form {
+            display: flex;
+            flex-direction: column;
+        }
+        label {
+            margin-bottom: 5px;
+            color: #555;
+        }
+        input[type="text"], input[type="password"], input[type="text"].otp {
+            padding: 8px;
+            margin-bottom: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px;
+            background-color: #28a745;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #218838;
+        }
+        .toggle-action {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        .toggle-action label {
+            margin: 0 10px;
+            color: #333;
+            cursor: pointer;
+        }
+        .logged-in-message {
+            text-align: center;
+        }
+        .logged-in-message p {
+            margin-bottom: 20px;
+            color: #333;
+        }
+        .logged-in-message button {
+            background-color: #007bff;
+        }
+        .logged-in-message button:last-of-type {
+            background-color: #dc3545;
+        }
+    </style>
     <script>
+        const {
+            browserSupportsWebAuthn,
+            startRegistration,
+            startAuthentication,
+            browserSupportsWebAuthnAutofill,
+        } = SimpleWebAuthnBrowser;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const token = localStorage.getItem('jwtToken');
+            const formContainer = document.getElementById('form-container');
+            const loggedInMessage = document.getElementById('logged-in-message');
+
+            if (token) {
+                formContainer.style.display = 'none';
+                loggedInMessage.style.display = 'block';
+            } else {
+                formContainer.style.display = 'block';
+                loggedInMessage.style.display = 'none';
+            }
+        });
+
         async function handleSubmit(event) {
             event.preventDefault();
             
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
+            const yubikeyOtp = document.getElementById('otp').value;
             const action = document.querySelector('input[name="action"]:checked').value;
 
             try {
@@ -28,52 +124,14 @@
                     }
 
                     const { publicKey } = await response.json();
-
-                    // Prepare WebAuthn options for the create() method
-                    const publicKeyOptions = {
-                        challenge: Uint8Array.from(publicKey.challenge, c => c.charCodeAt(0)),
-                        rp: {
-                            name: publicKey.rp.name,
-                            id: publicKey.rp.id
-                        },
-                        user: {
-                            id: Uint8Array.from(publicKey.user.id, c => c.charCodeAt(0)),
-                            name: publicKey.user.name,
-                            displayName: publicKey.user.displayName
-                        },
-                        pubKeyCredParams: publicKey.pubKeyCredParams.map(param => ({
-                            type: param.type,
-                            alg: param.alg
-                        })),
-                        timeout: publicKey.timeout,
-                        authenticatorSelection: publicKey.authenticatorSelection || {},
-                        attestation: publicKey.attestation || "direct",
-                        excludeCredentials: publicKey.excludeCredentials ? publicKey.excludeCredentials.map(cred => ({
-                            id: base64ToUint8Array(cred.id),
-                            type: cred.type
-                        })) : []
-                    };
-
-                    // Start WebAuthn registration
-                    const credential = await navigator.credentials.create({ publicKey: publicKeyOptions });
-
-                    // Prepare the registration response to send to the server
-                    const registrationResponse = {
-                        id: credential.id,
-                        rawId: btoa(String.fromCharCode(...new Uint8Array(credential.rawId))),
-                        type: credential.type,
-                        response: {
-                            attestationObject: btoa(String.fromCharCode(...new Uint8Array(credential.response.attestationObject))),
-                            clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(credential.response.clientDataJSON)))
-                        }
-                    };
+                    const credential = await startRegistration(publicKey);
 
                     response = await fetch('http://localhost:8080/register/finish', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify({ username, registrationData: registrationResponse, password })
+                        body: JSON.stringify({ username, ...credential })
                     });
 
                     if (!response.ok) {
@@ -83,7 +141,7 @@
                     alert('Registration successful');
 
                 } else if (action === 'login') {
-                    response = await fetch('http://localhost:8080/begin-login', {
+                    response = await fetch('http://localhost:8080/login/begin', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -95,41 +153,15 @@
                         throw new Error('Failed to initiate WebAuthn login');
                     }
 
-                    const { options } = await response.json();
+                    const { publicKey } = await response.json();
+                    const authResp = await startAuthentication(publicKey, false);
 
-                    // Start WebAuthn authentication
-                    const publicKey = {
-                        challenge: Uint8Array.from(atob(options.challenge), c => c.charCodeAt(0)),
-                        rpId: options.rpId,
-                        allowCredentials: options.allowCredentials.map(cred => ({
-                            id: Uint8Array.from(atob(cred.id), c => c.charCodeAt(0)),
-                            type: cred.type
-                        })),
-                        timeout: options.timeout,
-                        userVerification: options.userVerification
-                    };
-
-                    const assertion = await navigator.credentials.get({ publicKey });
-
-                    // Send the authentication response to the server
-                    const authResponse = {
-                        id: assertion.id,
-                        rawId: btoa(String.fromCharCode(...new Uint8Array(assertion.rawId))),
-                        type: assertion.type,
-                        response: {
-                            authenticatorData: btoa(String.fromCharCode(...new Uint8Array(assertion.response.authenticatorData))),
-                            clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(assertion.response.clientDataJSON))),
-                            signature: btoa(String.fromCharCode(...new Uint8Array(assertion.response.signature))),
-                            userHandle: assertion.response.userHandle ? btoa(String.fromCharCode(...new Uint8Array(assertion.response.userHandle))) : null
-                        }
-                    };
-
-                    response = await fetch('http://localhost:8080/finish-login', {
+                    response = await fetch('http://localhost:8080/login/finish', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify({ username, authenticationData: authResponse })
+                        body: JSON.stringify({ username, ...authResp })
                     });
 
                     if (!response.ok) {
@@ -137,12 +169,35 @@
                     }
 
                     const { token } = await response.json();
-                    localStorage.setItem('token', token);
+                    localStorage.setItem('jwtToken', token);
+                    localStorage.setItem('username', username);
+
+                    document.getElementById('form-container').style.display = 'none';
+                    document.getElementById('logged-in-message').style.display = 'block';
+
                     alert('Login successful');
 
-                    // Hide the form and show the logged in message
-                    document.getElementById('auth-container').style.display = 'none';
-                    document.getElementById('loggedin-container').style.display = 'block';
+                } else if (action === 'otp-login') {
+                    response = await fetch('http://localhost:8080/login/otp', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ username, otp: yubikeyOtp })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to authenticate with YubiKey OTP');
+                    }
+
+                    const { token } = await response.json();
+                    localStorage.setItem('jwtToken', token);
+                    localStorage.setItem('username', username);
+
+                    document.getElementById('form-container').style.display = 'none';
+                    document.getElementById('logged-in-message').style.display = 'block';
+
+                    alert('Login successful with YubiKey OTP');
                 }
             } catch (error) {
                 console.error('Error:', error);
@@ -150,12 +205,8 @@
             }
         }
 
-        async function handleProtectedEndpoint() {
-            const token = localStorage.getItem('token');
-            if (!token) {
-                alert('No token found. Please log in.');
-                return;
-            }
+        async function hitProtectedEndpoint() {
+            const token = localStorage.getItem('jwtToken');
 
             try {
                 const response = await fetch('http://localhost:8080/protected', {
@@ -177,111 +228,144 @@
             }
         }
 
-        async function handleProtectedEndpointWithWebAuthn() {
-            const token = localStorage.getItem('token');
-            if (!token) {
-                alert('No token found. Please log in.');
-                return;
-            }
+        async function hitProtectedWithWebAuthnEndpoint() {
+            const token = localStorage.getItem('jwtToken');
+            const username = localStorage.getItem('username');
 
+            let response;
             try {
-                // Request options for WebAuthn authentication
-                const response = await fetch('http://localhost:8080/begin-webauthn-auth', {
+                response = await fetch('http://localhost:8080/login/begin', {
                     method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ username })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to initiate WebAuthn login');
+                }
+
+                const { publicKey } = await response.json();
+                const authResp = await startAuthentication(publicKey, false);
+
+                response = await fetch('http://localhost:8080/login/finish', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ username, ...authResp })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to finish WebAuthn login');
+                }
+
+                response = await fetch('http://localhost:8080/protected/webauthn', {
+                    method: 'GET',
                     headers: {
                         'Authorization': `Bearer ${token}`
                     }
                 });
 
                 if (!response.ok) {
-                    throw new Error('Failed to get WebAuthn options');
+                    throw new Error('Failed to access protected WebAuthn endpoint');
                 }
 
-                const { options } = await response.json();
-
-                // Start WebAuthn authentication
-                const publicKey = {
-                    challenge: Uint8Array.from(atob(options.challenge), c => c.charCodeAt(0)),
-                    rpId: options.rpId,
-                    allowCredentials: options.allowCredentials.map(cred => ({
-                        id: Uint8Array.from(atob(cred.id), c => c.charCodeAt(0)),
-                        type: cred.type
-                    })),
-                    timeout: options.timeout,
-                    userVerification: options.userVerification
-                };
-
-                const assertion = await navigator.credentials.get({ publicKey });
-
-                // Send the authentication response to the server
-                const authResponse = {
-                    id: assertion.id,
-                    rawId: btoa(String.fromCharCode(...new Uint8Array(assertion.rawId))),
-                    type: assertion.type,
-                    response: {
-                        authenticatorData: btoa(String.fromCharCode(...new Uint8Array(assertion.response.authenticatorData))),
-                        clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(assertion.response.clientDataJSON))),
-                        signature: btoa(String.fromCharCode(...new Uint8Array(assertion.response.signature))),
-                        userHandle: assertion.response.userHandle ? btoa(String.fromCharCode(...new Uint8Array(assertion.response.userHandle))) : null
-                    }
-                };
-
-                // Call protected endpoint with WebAuthn
-                const protectedResponse = await fetch('http://localhost:8080/protected-webauthn', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ authenticationData: authResponse })
-                });
-
-                if (!protectedResponse.ok) {
-                    throw new Error('Failed to access protected endpoint with WebAuthn');
-                }
-
-                const data = await protectedResponse.text();
+                const data = await response.text();
                 alert(data);
             } catch (error) {
                 console.error('Error:', error);
-                alert('Failed to access protected endpoint with WebAuthn');
+                alert('Failed to access protected WebAuthn endpoint');
             }
         }
 
-        function handleLogout() {
-            localStorage.removeItem('token');
-            document.getElementById('auth-container').style.display = 'block';
-            document.getElementById('loggedin-container').style.display = 'none';
+        async function hitProtectedOtpEndpoint() {
+            const token = localStorage.getItem('jwtToken');
+            const otp = prompt('Enter your YubiKey OTP:');
+
+            if (!otp) {
+                alert('OTP is required');
+                return;
+            }
+
+            try {
+                const response = await fetch('http://localhost:8080/protected/otp', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ otp })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to access protected OTP endpoint');
+                }
+
+                const data = await response.text();
+                alert(data);
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to access protected OTP endpoint');
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('jwtToken');
+            document.getElementById('form-container').style.display = 'block';
+            document.getElementById('logged-in-message').style.display = 'none';
         }
     </script>
 </head>
 <body>
-    <div id="auth-container">
+    <div class="container">
         <h1>Login/Register</h1>
-        <form onsubmit="handleSubmit(event);">
-            <label>
-                <input type="radio" name="action" value="register" checked> Register
-            </label>
-            <label>
-                <input type="radio" name="action" value="login"> Login
-            </label>
-            <br>
-            <label for="username">Username:</label>
-            <input type="text" id="username" name="username" required>
-            <br>
-            <label for="password">Password:</label>
-            <input type="password" id="password" name="password" required>
-            <br>
-            <button type="submit">Submit</button>
-        </form>
+        <div id="form-container">
+            <div class="toggle-action">
+                <label>
+                    <input type="radio" name="action" value="register" checked> Register
+                </label>
+                <label>
+                    <input type="radio" name="action" value="login"> Login
+                </label>
+                <label>
+                    <input type="radio" name="action" value="otp-login"> YubiKey OTP Login
+                </label>
+            </div>
+            <form onsubmit="handleSubmit(event);">
+                <label for="username">Username:</label>
+                <input type="text" id="username" name="username" required>
+                <label for="password">Password:</label>
+                <input type="password" id="password" name="password">
+                <label for="otp" class="otp-label" style="display: none;">YubiKey OTP:</label>
+                <input type="text" id="otp" name="otp" class="otp" style="display: none;">
+                <button type="submit">Submit</button>
+            </form>
+        </div>
+        <div id="logged-in-message" class="logged-in-message" style="display: none;">
+            <p>You are logged in!</p>
+            <button id="protected-button" onclick="hitProtectedEndpoint()">Access Protected Endpoint</button>
+            <button id="protected-with-webauthn-button" onclick="hitProtectedWithWebAuthnEndpoint()">Access Protected WebAuthn Endpoint</button>
+            <button id="protected-otp-button" onclick="hitProtectedOtpEndpoint()">Access Protected OTP Endpoint</button>
+            <button id="logout-button" onclick="logout()">Logout</button>
+        </div>
     </div>
-
-    <div id="loggedin-container" style="display: none;">
-        <h1>You are logged in!</h1>
-        <button onclick="handleProtectedEndpoint()">Access Protected Endpoint</button>
-        <button onclick="handleProtectedEndpointWithWebAuthn()">Access Protected Endpoint with WebAuthn</button>
-        <br>
-        <button onclick="handleLogout()">Logout</button>
-    </div>
+    <script>
+        // Toggle OTP field visibility based on selected action
+        document.querySelectorAll('input[name="action"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+                const otpLabel = document.querySelector('.otp-label');
+                const otpInput = document.querySelector('.otp');
+                if (document.querySelector('input[name="action"]:checked').value === 'otp-login') {
+                    otpLabel.style.display = 'block';
+                    otpInput.style.display = 'block';
+                } else {
+                    otpLabel.style.display = 'none';
+                    otpInput.style.display = 'none';
+                }
+            });
+        });
+    </script>
 </body>
 </html>
