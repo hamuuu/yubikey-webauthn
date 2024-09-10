@@ -1,12 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login/Register</title>
     <script src="https://webauthn.io/static/js/simplewebauthn-browser.8.2.1.umd.min.js"></script>
     <style>
-        /* Existing styles */
         body {
             font-family: Arial, sans-serif;
             background-color: #f4f4f4;
@@ -17,6 +17,7 @@
             align-items: center;
             height: 100vh;
         }
+
         .container {
             background-color: #fff;
             padding: 20px;
@@ -24,24 +25,31 @@
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
             width: 300px;
         }
+
         h1 {
             text-align: center;
             color: #333;
         }
+
         form {
             display: flex;
             flex-direction: column;
         }
+
         label {
             margin-bottom: 5px;
             color: #555;
         }
-        input[type="text"], input[type="password"], input[type="text"].otp {
+
+        input[type="text"],
+        #otp-field,
+        input[type="password"] {
             padding: 8px;
             margin-bottom: 15px;
             border: 1px solid #ddd;
             border-radius: 4px;
         }
+
         button {
             padding: 10px;
             background-color: #28a745;
@@ -51,29 +59,36 @@
             cursor: pointer;
             margin-bottom: 10px;
         }
+
         button:hover {
             background-color: #218838;
         }
+
         .toggle-action {
             display: flex;
             justify-content: center;
             margin-bottom: 20px;
         }
+
         .toggle-action label {
             margin: 0 10px;
             color: #333;
             cursor: pointer;
         }
+
         .logged-in-message {
             text-align: center;
         }
+
         .logged-in-message p {
             margin-bottom: 20px;
             color: #333;
         }
+
         .logged-in-message button {
             background-color: #007bff;
         }
+
         .logged-in-message button:last-of-type {
             background-color: #dc3545;
         }
@@ -83,30 +98,44 @@
             browserSupportsWebAuthn,
             startRegistration,
             startAuthentication,
-            browserSupportsWebAuthnAutofill,
         } = SimpleWebAuthnBrowser;
 
         document.addEventListener('DOMContentLoaded', () => {
             const token = localStorage.getItem('jwtToken');
             const formContainer = document.getElementById('form-container');
             const loggedInMessage = document.getElementById('logged-in-message');
+            const registerYubikeyButton = document.getElementById('register-yubikey-button');
+            const otpField = document.getElementById('otp-field');
+            const otpRadioButton = document.getElementById('otp-radio');
 
             if (token) {
                 formContainer.style.display = 'none';
                 loggedInMessage.style.display = 'block';
             } else {
+                otpField.style.display = 'none';
                 formContainer.style.display = 'block';
                 loggedInMessage.style.display = 'none';
             }
+
+            document.querySelectorAll('input[name="action"]').forEach(radio => {
+                radio.addEventListener('change', function() {
+                    if (otpRadioButton.checked) {
+                        otpField.style.display = 'block';
+                    } else {
+                        otpField.style.display = 'none';
+                    }
+                });
+            });
         });
+
 
         async function handleSubmit(event) {
             event.preventDefault();
-            
+
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
-            const yubikeyOtp = document.getElementById('otp').value;
             const action = document.querySelector('input[name="action"]:checked').value;
+            const otp = document.getElementById('otp').value;
 
             try {
                 let response;
@@ -116,92 +145,162 @@
                         headers: {
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify({ username })
+                        body: JSON.stringify({ username, password })
                     });
 
                     if (!response.ok) {
-                        throw new Error('Failed to initiate WebAuthn registration');
-                    }
-
-                    const { publicKey } = await response.json();
-                    const credential = await startRegistration(publicKey);
-
-                    response = await fetch('http://localhost:8080/register/finish', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ username, ...credential })
-                    });
-
-                    if (!response.ok) {
-                        throw new Error('Failed to finish WebAuthn registration');
+                        throw new Error('Failed to register user');
                     }
 
                     alert('Registration successful');
 
                 } else if (action === 'login') {
-                    response = await fetch('http://localhost:8080/login/begin', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ username, password })
-                    });
+                    try {
+                        const response = await fetch('http://localhost:8080/login', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ username, password })
+                        });
 
-                    if (!response.ok) {
-                        throw new Error('Failed to initiate WebAuthn login');
+                        if (!response.ok) {
+                            throw new Error('Failed to login');
+                        }
+
+                        const responseData = await response.json();
+
+                        // Check if the response contains a token or WebAuthn options
+                        if (responseData.token) {
+                            // JWT token present, perform login
+                            localStorage.setItem('jwtToken', responseData.token);
+                            localStorage.setItem('username', username);
+
+                            document.getElementById('form-container').style.display = 'none';
+                            document.getElementById('logged-in-message').style.display = 'block';
+
+                            alert('Login successful');
+                        } else if (responseData.publicKey) {
+                            // WebAuthn options present, handle WebAuthn login
+                            const authResp = await startAuthentication(responseData.publicKey);
+
+                            const webauthnResponse = await fetch('http://localhost:8080/login/finish', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({ username, ...authResp })
+                            });
+
+                            if (!webauthnResponse.ok) {
+                                throw new Error('Failed to finish WebAuthn login');
+                            }
+
+                            const { token } = await webauthnResponse.json();
+
+                            localStorage.setItem('jwtToken', token);
+                            localStorage.setItem('username', username);
+
+                            document.getElementById('form-container').style.display = 'none';
+                            document.getElementById('logged-in-message').style.display = 'block';
+
+                            alert('Login successful with WebAuthn');
+                        } else {
+                            throw new Error('Unexpected response format');
+                        }
+                    } catch (error) {
+                        console.error('Error:', error);
+                        alert('Login failed');
                     }
-
-                    const { publicKey } = await response.json();
-                    const authResp = await startAuthentication(publicKey, false);
-
-                    response = await fetch('http://localhost:8080/login/finish', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ username, ...authResp })
-                    });
-
-                    if (!response.ok) {
-                        throw new Error('Failed to finish WebAuthn login');
-                    }
-
-                    const { token } = await response.json();
-                    localStorage.setItem('jwtToken', token);
-                    localStorage.setItem('username', username);
-
-                    document.getElementById('form-container').style.display = 'none';
-                    document.getElementById('logged-in-message').style.display = 'block';
-
-                    alert('Login successful');
-
-                } else if (action === 'otp-login') {
+                } else if (action === 'otp-login'){
+                    console.log(otp)
                     response = await fetch('http://localhost:8080/login/otp', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify({ username, otp: yubikeyOtp })
+                        body: JSON.stringify({ username, password, otp })
                     });
 
                     if (!response.ok) {
-                        throw new Error('Failed to authenticate with YubiKey OTP');
+                        throw new Error('Failed to login with OTP');
                     }
 
                     const { token } = await response.json();
+
                     localStorage.setItem('jwtToken', token);
-                    localStorage.setItem('username', username);
 
                     document.getElementById('form-container').style.display = 'none';
                     document.getElementById('logged-in-message').style.display = 'block';
 
-                    alert('Login successful with YubiKey OTP');
-                }
+                    alert('Login successful with OTP');
+                } 
             } catch (error) {
                 console.error('Error:', error);
                 alert('Operation failed');
+            }
+        }
+
+        async function registerYubiKey() {
+            const username = localStorage.getItem('username');
+            const token = localStorage.getItem('jwtToken');
+
+            try {
+                const response = await fetch('http://localhost:8080/webauthn/register/start', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to initiate YubiKey registration');
+                }
+
+                const { publicKey } = await response.json();
+                const credential = await startRegistration(publicKey);
+
+                const finishResponse = await fetch('http://localhost:8080/webauthn/register/finish', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+
+                    },
+                    body: JSON.stringify({ ...credential })
+                });
+
+                if (!finishResponse.ok) {
+                    throw new Error('Failed to finish YubiKey registration');
+                }
+
+                alert('YubiKey registration successful');
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to register YubiKey');
+            }
+        }
+
+        async function registerOTPYubiKey() {
+            const token = localStorage.getItem('jwtToken');
+            try {
+                const response = await fetch('http://localhost:8080/otp/register/start', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to initiate OTP YubiKey registration');
+                }
+
+                alert(await response.text() + " -   Copy TOTP secret ke Yubikey authenticator");
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to register OTP YubiKey');
             }
         }
 
@@ -228,61 +327,141 @@
             }
         }
 
-        async function hitProtectedWithWebAuthnEndpoint() {
+        async function hitProtectedEndpointWithWebAuthn() {
             const token = localStorage.getItem('jwtToken');
-            const username = localStorage.getItem('username');
 
-            let response;
             try {
-                response = await fetch('http://localhost:8080/login/begin', {
+                const response = await fetch('http://localhost:8080/protected/webauthn/start', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify({ username })
                 });
 
                 if (!response.ok) {
-                    throw new Error('Failed to initiate WebAuthn login');
+                    throw new Error('Failed to initiate WebAuthn for protected endpoint');
                 }
 
                 const { publicKey } = await response.json();
-                const authResp = await startAuthentication(publicKey, false);
-
-                response = await fetch('http://localhost:8080/login/finish', {
+                const authResp = await startAuthentication(publicKey);
+                console.log(authResp)
+                const webauthnResponse = await fetch('http://localhost:8080/protected/webauthn/finish', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ username, ...authResp })
-                });
-
-                if (!response.ok) {
-                    throw new Error('Failed to finish WebAuthn login');
-                }
-
-                response = await fetch('http://localhost:8080/protected/webauthn', {
-                    method: 'GET',
-                    headers: {
+                        'Content-Type': 'application/json',
                         'Authorization': `Bearer ${token}`
-                    }
+                    },
+                    body: JSON.stringify(authResp)
                 });
 
-                if (!response.ok) {
-                    throw new Error('Failed to access protected WebAuthn endpoint');
+                if (!webauthnResponse.ok) {
+                    throw new Error('Failed to finish WebAuthn authentication');
                 }
 
-                const data = await response.text();
+                const data = await webauthnResponse.text();
                 alert(data);
             } catch (error) {
                 console.error('Error:', error);
-                alert('Failed to access protected WebAuthn endpoint');
+                alert('Failed to access protected endpoint with WebAuthn');
             }
         }
 
-        async function hitProtectedOtpEndpoint() {
+        async function uploadFile() {
+            const fileInput = document.getElementById('file-input');
+            const file = fileInput.files[0];
             const token = localStorage.getItem('jwtToken');
-            const otp = prompt('Enter your YubiKey OTP:');
+
+            if (!file) {
+                alert('Please select a file');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = fetch('http://localhost:8080/encrypt-file', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: formData
+                }).then(response => {
+                    if (!response.ok) {
+                        throw new Error('Error uploading or encrypting file');
+                    }
+                    return response.blob(); // Get the response as a Blob (binary data)
+                })
+                .then(blob => {
+                    // Create a temporary download link and trigger the download
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = file.name + '.gpg'; // Name the encrypted file
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url); // Clean up URL object
+                })
+
+            } catch (error) {
+                console.error('Error:', error);
+                alert('File upload failed');
+            }
+        }
+
+        async function decryptFile() {
+            const fileInput = document.getElementById('file-input-decrypt');
+            const file = fileInput.files[0];
+            const token = localStorage.getItem('jwtToken');
+
+            if (!file) {
+                alert('Please select a file to decrypt');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('http://localhost:8080/decrypt-file', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to decrypt file');
+                }
+
+                const blob = await response.blob();
+                const downloadUrl = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = 'decrypted_file';
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+
+                alert('File decrypted successfully');
+            } catch (error) {
+                console.error('Error:', error);
+                alert('File decryption failed');
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('jwtToken');
+            document.getElementById('form-container').style.display = 'block';
+            document.getElementById('logged-in-message').style.display = 'none';
+        }
+
+        async function hitProtectedEndpointWithOTP() {
+            const token = localStorage.getItem('jwtToken');
+            const otp = prompt('Enter your OTP:'); // Prompt user to enter OTP
 
             if (!otp) {
                 alert('OTP is required');
@@ -296,28 +475,24 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify({ otp })
+                    body: JSON.stringify({ otp }) // Send OTP in the request body
                 });
 
                 if (!response.ok) {
-                    throw new Error('Failed to access protected OTP endpoint');
+                    throw new Error('Failed to access protected endpoint with OTP');
                 }
 
                 const data = await response.text();
-                alert(data);
+                alert(data); // Show response from the server
             } catch (error) {
                 console.error('Error:', error);
-                alert('Failed to access protected OTP endpoint');
+                alert('Failed to access protected endpoint with OTP');
             }
         }
 
-        function logout() {
-            localStorage.removeItem('jwtToken');
-            document.getElementById('form-container').style.display = 'block';
-            document.getElementById('logged-in-message').style.display = 'none';
-        }
     </script>
 </head>
+
 <body>
     <div class="container">
         <h1>Login/Register</h1>
@@ -330,7 +505,7 @@
                     <input type="radio" name="action" value="login"> Login
                 </label>
                 <label>
-                    <input type="radio" name="action" value="otp-login"> YubiKey OTP Login
+                    <input type="radio" name="action" value="otp-login" id="otp-radio"> OTP Login
                 </label>
             </div>
             <form onsubmit="handleSubmit(event);">
@@ -338,34 +513,28 @@
                 <input type="text" id="username" name="username" required>
                 <label for="password">Password:</label>
                 <input type="password" id="password" name="password">
-                <label for="otp" class="otp-label" style="display: none;">YubiKey OTP:</label>
-                <input type="text" id="otp" name="otp" class="otp" style="display: none;">
+                <div class="otp-field" id="otp-field">
+                    <label for="otp">OTP</label>
+                    <input type="number" id="otp">
+                </div>
                 <button type="submit">Submit</button>
             </form>
         </div>
         <div id="logged-in-message" class="logged-in-message" style="display: none;">
             <p>You are logged in!</p>
+            <button id="register-yubikey-button" onclick="registerYubiKey()">Register MFA Webauthn Yubikey</button>
+            <button onclick="registerOTPYubiKey()">Register OTP YubiKey</button>
             <button id="protected-button" onclick="hitProtectedEndpoint()">Access Protected Endpoint</button>
-            <button id="protected-with-webauthn-button" onclick="hitProtectedWithWebAuthnEndpoint()">Access Protected WebAuthn Endpoint</button>
-            <button id="protected-otp-button" onclick="hitProtectedOtpEndpoint()">Access Protected OTP Endpoint</button>
+            <button id="protected-webauthn-button" onclick="hitProtectedEndpointWithWebAuthn()">Access Protected
+                Endpoint with WebAuthn</button>
+            <button id="protected-otp-button" onclick="hitProtectedEndpointWithOTP()">Access Protected Endpoint with OTP</button>
+            <input type="file" id="file-input" style="display:none;" onchange="uploadFile()">
+            <button onclick="document.getElementById('file-input').click()">Upload and Encrypt File</button>
+            <input type="file" id="file-input-decrypt" style="display:none;" onchange="decryptFile()">
+            <button onclick="document.getElementById('file-input-decrypt').click()">Upload and Decrypt File</button>
             <button id="logout-button" onclick="logout()">Logout</button>
         </div>
     </div>
-    <script>
-        // Toggle OTP field visibility based on selected action
-        document.querySelectorAll('input[name="action"]').forEach(radio => {
-            radio.addEventListener('change', () => {
-                const otpLabel = document.querySelector('.otp-label');
-                const otpInput = document.querySelector('.otp');
-                if (document.querySelector('input[name="action"]:checked').value === 'otp-login') {
-                    otpLabel.style.display = 'block';
-                    otpInput.style.display = 'block';
-                } else {
-                    otpLabel.style.display = 'none';
-                    otpInput.style.display = 'none';
-                }
-            });
-        });
-    </script>
 </body>
+
 </html>

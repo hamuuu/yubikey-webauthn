@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 	"yubikey/models"
@@ -11,14 +10,18 @@ import (
 	"github.com/pquerna/otp/totp"
 )
 
-var totpSecret string = "Y33SBSB66NKXQDT5WDUVCB5QYZ73LJEU"
-
 // Handler to generate a new TOTP secret
-func GenerateTOTPHandler(w http.ResponseWriter, r *http.Request) {
+func RegisterOTPHandler(w http.ResponseWriter, r *http.Request) {
+	user, err := models.GetUserByName(getUserNameFromContext(r.Context()))
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
 	// Generate a new TOTP secret key for the user
 	key, err := totp.Generate(totp.GenerateOpts{
-		Issuer:      "MyApp",                           // Issuer name (e.g., your app name)
-		AccountName: "mochamad.satria@spesolution.com", // The user account for whom the TOTP is being created
+		Issuer:      "MyApp",                             // Issuer name (e.g., your app name)
+		AccountName: getUserNameFromContext(r.Context()), // The user account for whom the TOTP is being created
 	})
 	if err != nil {
 		http.Error(w, "Failed to generate TOTP secret", http.StatusInternalServerError)
@@ -26,11 +29,11 @@ func GenerateTOTPHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract the TOTP secret as a string
-	totpSecret = key.Secret()
+	user.TOTPSecret = key.Secret()
+	models.UpdateUser(user)
 
 	// Display the TOTP secret key for YubiKey configuration
-	fmt.Fprintf(w, "Your TOTP secret is: %s\n", totpSecret)
-	fmt.Fprintf(w, "Scan this in Yubico Authenticator to configure your YubiKey.\n")
+	w.Write([]byte(user.TOTPSecret))
 }
 
 // Handler to verify a TOTP code entered by the user
@@ -53,8 +56,13 @@ func VerifyTOTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !models.CheckPasswordHash(req.Password, user.Password) {
+		http.Error(w, "Invalid password", http.StatusUnauthorized)
+		return
+	}
+
 	// Validate the TOTP code based on the shared secret
-	valid, err := totp.ValidateCustom(req.Otp, totpSecret, time.Now().UTC(), totp.ValidateOpts{
+	valid, err := totp.ValidateCustom(req.Otp, user.TOTPSecret, time.Now().UTC(), totp.ValidateOpts{
 		Period:    60,
 		Skew:      0,
 		Digits:    otp.DigitsSix,
@@ -93,8 +101,14 @@ func ProtectedHandlerWithOtp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	user, err := models.GetUserByName(getUserNameFromContext(r.Context()))
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
 	// Validate the TOTP code based on the shared secret
-	valid, err := totp.ValidateCustom(req.Otp, totpSecret, time.Now().UTC(), totp.ValidateOpts{
+	valid, err := totp.ValidateCustom(req.Otp, user.TOTPSecret, time.Now().UTC(), totp.ValidateOpts{
 		Period:    60,
 		Skew:      0,
 		Digits:    otp.DigitsSix,

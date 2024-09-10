@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"strings"
 
@@ -30,9 +29,8 @@ func JWTMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
-		log.Printf("%+v", claims)
 		// Store user ID from token in request context
-		r = r.WithContext(context.WithValue(r.Context(), "userID", claims.Subject))
+		r = r.WithContext(context.WithValue(r.Context(), "userName", claims.Subject))
 
 		// Proceed to the next handler
 		next.ServeHTTP(w, r)

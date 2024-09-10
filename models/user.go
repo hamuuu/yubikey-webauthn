@@ -15,6 +15,7 @@ type User struct {
 	DisplayName string                `bson:"display_name"`
 	Password    string                `bson:"password"`
 	Credentials []webauthn.Credential `bson:"credentials"`
+	TOTPSecret  string                `bson:"totp_secret"`
 }
 
 func HashPassword(password string) (string, error) {

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -14,7 +15,7 @@ import (
 	"github.com/dgrijalva/jwt-go"
 )
 
-func RegisterHandler(w http.ResponseWriter, r *http.Request) {
+func RegisterUserHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -59,12 +60,26 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"message": "User registered successfully"})
+}
+
+func RegisterWebAuthnHandler(w http.ResponseWriter, r *http.Request) {
+	// Fetch the user from the database
+	user, err := models.GetUserByName(getUserNameFromContext(r.Context()))
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
 	// Initiate WebAuthn registration
 	options, sessionData, err := configs.WebAuthn.BeginRegistration(user)
 	if err != nil {
 		http.Error(w, "Failed to initiate WebAuthn registration", http.StatusInternalServerError)
 		return
 	}
+
+	// Store session data for WebAuthn
 	configs.StoreMutex.Lock()
 	configs.SessionStore[string(user.ID)] = sessionData
 	configs.StoreMutex.Unlock()
@@ -74,28 +89,8 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func FinishRegistrationHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Username string `json:"username"`
-	}
-
-	// Read the body into a buffer
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusInternalServerError)
-		return
-	}
-
-	// Reset the request body so it can be read again
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-	// Decode the JSON
-	if err := json.NewDecoder(bytes.NewBuffer(bodyBytes)).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
-		return
-	}
-
 	// Retrieve the user from the database
-	user, err := models.GetUserByName(req.Username)
+	user, err := models.GetUserByName(getUserNameFromContext(r.Context()))
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
@@ -128,7 +123,6 @@ func FinishRegistrationHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Registration successful"))
 }
 
-// Begin login with both password and WebAuthn
 func BeginLoginHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
@@ -140,28 +134,46 @@ func BeginLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fetch user from the database
 	user, err := models.GetUserByName(req.Username)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
-	// if !checkPasswordHash(req.Password, user.Password) {
-	// 	http.Error(w, "Invalid password", http.StatusUnauthorized)
-	// 	return
-	// }
-
-	options, sessionData, err := configs.WebAuthn.BeginLogin(user)
-	if err != nil {
-		http.Error(w, "Failed to initiate WebAuthn login", http.StatusInternalServerError)
+	// User doesn't have WebAuthn credentials, proceed with password authentication
+	if !models.CheckPasswordHash(req.Password, user.Password) {
+		http.Error(w, "Invalid password", http.StatusUnauthorized)
 		return
 	}
 
-	configs.StoreMutex.Lock()
-	configs.SessionStore[string(user.ID)] = sessionData
-	configs.StoreMutex.Unlock()
+	// Check if the user has WebAuthn credentials in the database
+	if len(user.Credentials) > 0 {
+		// User has WebAuthn credentials, begin WebAuthn login
+		options, sessionData, err := configs.WebAuthn.BeginLogin(user)
+		if err != nil {
+			http.Error(w, "Failed to initiate WebAuthn login", http.StatusInternalServerError)
+			return
+		}
 
-	json.NewEncoder(w).Encode(options)
+		// Store WebAuthn session data
+		configs.StoreMutex.Lock()
+		configs.SessionStore[string(user.ID)] = sessionData
+		configs.StoreMutex.Unlock()
+
+		// Send WebAuthn options to the client
+		json.NewEncoder(w).Encode(options)
+	} else {
+
+		// Password authentication successful, proceed with JWT or other session handling
+		token, err := generateJWT(user)
+		if err != nil {
+			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]string{"token": token})
+	}
 }
 
 func FinishLoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +235,56 @@ func ProtectedHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Welcome! You have accessed a protected route."))
 }
 
+func ProtectedHandlerWebAuthnStart(w http.ResponseWriter, r *http.Request) {
+	// Fetch user from the database
+	user, err := models.GetUserByName(getUserNameFromContext(r.Context()))
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	options, sessionData, err := configs.WebAuthn.BeginLogin(user)
+	if err != nil {
+		http.Error(w, "Failed to initiate WebAuthn login", http.StatusInternalServerError)
+		return
+	}
+
+	// Store WebAuthn session data
+	configs.StoreMutex.Lock()
+	configs.SessionStore[string(user.ID)] = sessionData
+	configs.StoreMutex.Unlock()
+	json.NewEncoder(w).Encode(options)
+}
+
+func ProtectedHandlerWebAuthnFinish(w http.ResponseWriter, r *http.Request) {
+	user, err := models.GetUserByName(getUserNameFromContext(r.Context()))
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Retrieve the session data from the in-memory store
+	configs.StoreMutex.RLock()
+	sessionData, exists := configs.SessionStore[string(user.ID)]
+	configs.StoreMutex.RUnlock()
+	if !exists {
+		http.Error(w, "Session data not found", http.StatusBadRequest)
+		return
+	}
+
+	// Finish the WebAuthn login
+	_, err = configs.WebAuthn.FinishLogin(user, *sessionData, r)
+	if err != nil {
+		log.Println("error : " + err.Error())
+		http.Error(w, "Failed to finish login", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Hit protected endpoint with webauthn successfully"))
+}
+
 var jwtSecretKey = []byte("your_secret_key")
 
 // Function to generate JWT
@@ -232,7 +294,7 @@ func generateJWT(user *models.User) (string, error) {
 
 	// Create JWT claims, which includes the username and expiry time
 	claims := &jwt.StandardClaims{
-		Subject:   string(user.ID),
+		Subject:   string(user.Name),
 		ExpiresAt: expirationTime.Unix(),
 	}
 
@@ -246,4 +308,13 @@ func generateJWT(user *models.User) (string, error) {
 	}
 
 	return tokenString, nil
+}
+
+func getUserNameFromContext(ctx context.Context) string {
+	userName, ok := ctx.Value("userName").(string)
+	if !ok {
+		// Handle the case where the value is not present or not of the expected type
+		return ""
+	}
+	return userName
 }
